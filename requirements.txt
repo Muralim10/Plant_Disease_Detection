@@ -1,0 +1,8 @@
+tensorflow==2.18.0
+streamlit==1.44.0
+rich==14.0.0
+markdown-it-py==3.0.0
+mdurl==0.1.2
+pygments==2.19.1
+pillow
+numpy
