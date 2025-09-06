@@ -1,107 +1,86 @@
-from flask import Flask, render_template, request, jsonify
-from tensorflow.keras.preprocessing import image
-from tensorflow.keras.models import load_model
+# app.py - Streamlit app for Keras/TensorFlow model
+import streamlit as st
+from PIL import Image
 import numpy as np
-#import gemini_api as gem
-import io
-from googletrans import Translator
+import tensorflow as tf
+import os
+import json
+import matplotlib.pyplot as plt
 
-app = Flask(__name__)
+# ---------------- Page Config ----------------
+st.set_page_config(page_title="Image Classifier", layout="centered")
 
-model_path = 'model.h5'
-model = None
-predicted_class_label=""
+# ---------------- Settings ----------------
+MODEL_PATH = "models/my_model.h5"     # change path if needed
+CLASS_JSON = "models/class_names.json"  # file with class names in training order
+IMAGE_SIZE = (224, 224)               # change to your training input size
+PREPROCESS = "mobilenet_v2"           # set according to training: "mobilenet_v2", "efficientnet", "resnet50", or "none"
 
-class_labels = {
-    0: 'Apple scab',
-    1: 'Apple Black rot',
-    2: 'Apple rust',
-    3: 'Apple healthy',
-    4: 'Blueberry healthy',
-    5: 'Cherry Powdery mildew',
-    6: 'Cherry healthy',
-    7: 'Corn Cercospora spot',
-    8: 'Corn Common rust',
-    9: 'Corn Leaf Blight',
-    10: 'Corn healthy',
-    11: 'Grape Black rot',
-    12: 'Grape Esca(Black_Measles)',
-    13: 'Grape Isariopsis Leaf Spot',
-    14: 'Grape healthy',
-    15: 'Orange Citrus greening',
-    16: 'Peach Bacterial spot',
-    17: 'Peach healthy',
-    18: 'Pepper bell Bacterial spot',
-    19: 'Pepper bell healthy',
-    20: 'Potato Early blight',
-    21: 'Potato Late blight',
-    22: 'Potato healthy',
-    23: 'Raspberry healthy',
-    24: 'Soybean healthy',
-    25: 'Squash Powdery mildew',
-    26: 'Strawberry Leaf scorch',
-    27: 'Strawberry healthy',
-    28: 'Tomato Bacterial spot',
-    29: 'Tomato Early blight',
-    30: 'Tomato Late blight',
-    31: 'Tomato Leaf Mold',
-    32: 'Tomato Septoria leaf spot',
-    33: 'Tomato Spider mites ',
-    34: 'Tomato Target Spot',
-    35: 'Tomato Yellow Leaf Curl Virus',
-    36: 'Tomato mosaic virus',
-    37: 'Tomato healthy'
-}
+# ---------------- Load Model & Metadata ----------------
+@st.cache_resource
+def load_model(path):
+    return tf.keras.models.load_model(path)
 
-def load_model_if_necessary():
-    global model
-    if model is None:
-        model = load_model(model_path)
+@st.cache_resource
+def load_class_names(path):
+    if os.path.exists(path):
+        with open(path, "r") as f:
+            return json.load(f)
+    return [f"class_{i}" for i in range(100)]  # fallback dummy names
 
-@app.route('/')
-def home():
-    return render_template('index.html')
+model = load_model(MODEL_PATH)
+class_names = load_class_names(CLASS_JSON)
 
-@app.route('/predict', methods=['POST'])
-def predict():
-    if request.method == 'POST':
-        load_model_if_necessary()
-        if 'image' not in request.files:
-            return 'No file part'
-        
-        file = request.files['image']
+# ---------------- Preprocessing ----------------
+def preprocess_image(pil_img):
+    img = pil_img.convert("RGB").resize(IMAGE_SIZE)
+    arr = np.array(img).astype(np.float32)
 
-        if file.filename == '':
-            return 'No selected file'
+    if PREPROCESS == "mobilenet_v2":
+        arr = tf.keras.applications.mobilenet_v2.preprocess_input(arr)
+    elif PREPROCESS.startswith("efficientnet"):
+        arr = tf.keras.applications.efficientnet.preprocess_input(arr)
+    elif PREPROCESS == "resnet50":
+        arr = tf.keras.applications.resnet50.preprocess_input(arr)
+    else:
+        arr = arr / 255.0
 
-        try:
-            img = image.load_img(io.BytesIO(file.read()), target_size=(100, 100))  
-            img_array = image.img_to_array(img)
-            img_array = np.expand_dims(img_array, axis=0)
-            img_array /= 255.0
-    
-            predictions = model.predict(img_array)
-            global predicted_class_label
-            predicted_class_index = np.argmax(predictions)
-            predicted_class_label = class_labels[predicted_class_index]
+    return np.expand_dims(arr, axis=0)
 
-            return render_template('result.html', predicted_class=predicted_class_label)
-        except Exception as e:
-            return str(e)
+# ---------------- Prediction ----------------
+def predict_topk(pil_img, top_k=3):
+    x = preprocess_image(pil_img)
+    preds = model.predict(x)[0]
+    probs = tf.nn.softmax(preds).numpy()
+    top_idx = np.argsort(probs)[::-1][:top_k]
+    return [(class_names[i], float(probs[i])) for i in top_idx]
 
-@app.route('/translate', methods=['POST'])
-def translate_text():
-    data = request.get_json()
-    text = data.get('text', '')
-    
-    translator = Translator()
-    translated_text = translator.translate(text, src='en', dest='ta').text
-    
-    return jsonify({'translated_text': translated_text})
+# ---------------- UI ----------------
+st.title("📷 Keras Image Classifier")
+st.write("Upload an image and let the model predict its class.")
 
-if __name__ == '__main__':
-    app.run(debug=True)
-            
+uploaded = st.file_uploader("Choose an image", type=["jpg", "jpeg", "png"])
+top_k = st.sidebar.slider("Show top K predictions", 1, min(10, len(class_names)), 3)
 
+if uploaded:
+    img = Image.open(uploaded)
+    st.image(img, caption="Input Image", use_column_width=True)
 
+    if st.button("Predict"):
+        with st.spinner("Running inference..."):
+            results = predict_topk(img, top_k=top_k)
 
+        st.success("Prediction complete!")
+
+        # Show results
+        st.write("### Predictions")
+        for name, prob in results:
+            st.write(f"- **{name}**: {prob*100:.2f}%")
+
+        # Show bar chart
+        labels = [name for name, _ in results]
+        values = [prob*100 for _, prob in results]
+        fig, ax = plt.subplots()
+        ax.barh(labels[::-1], values[::-1])
+        ax.set_xlabel("Probability (%)")
+        st.pyplot(fig)
